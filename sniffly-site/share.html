@@ -2193,6 +2193,15 @@ window.StatsCardsModule = {
                         </span>
                     </span>
                     <span>${StatsModule.calculateDaysInclusive(statistics)} days</span>
+                    ${(() => {
+                        // Show context info if there are compact summaries
+                        const compactSummaryCount = messageTypes.compact_summary || 0;
+                        if (compactSummaryCount > 0 && statistics.user_interactions) {
+                            const commandsPerContext = Math.floor(statistics.user_interactions.user_commands_analyzed / compactSummaryCount);
+                            return `<span>${commandsPerContext} cmds/full context</span>`;
+                        }
+                        return '';
+                    })()}
                 </div>
             </div>
 
@@ -2236,6 +2245,10 @@ window.StatsCardsModule = {
                 <div class="breakdown">
                     <span>${StatsModule.calculateDistinctTools(statistics)} tools</span>
                     <span>${StatsModule.calculateTotalToolCalls(statistics).toLocaleString()} tool calls</span>
+                    ${statistics.user_interactions.search_tool_percentage !== undefined ? 
+                        `<span>${statistics.user_interactions.search_tool_percentage}% search</span>` : 
+                        ''
+                    }
                 </div>
             </div>
 
@@ -2280,7 +2293,7 @@ window.StatsCardsModule = {
                         <div><strong>Cost Saved:</strong> Calculated as (Read × 0.9) - (Created × 0.25) in base token units. Cache creation costs 25% more, but reading costs 90% less.</div>
                     </div>
                 </h3>
-                <div class="value">$${formatNumber(overview.total_tokens.cache_read)}</div>
+                <div class="value">${formatNumber(overview.total_tokens.cache_read)}</div>
                 <div class="breakdown">
                     <span>${overview.total_messages.toLocaleString()} total messages</span>
                     <span>Created: ${formatNumber(overview.total_tokens.cache_creation)}</span>
@@ -2527,10 +2540,13 @@ async function initializeCharts(statistics) {
       : 0;
         
     // Skip chart if no data
-    if (maxTools === 0 || filteredData.length === 0) {
-      document.getElementById('interruption-rate-chart').parentElement.style.display = 'none';
-      return;
-    }
+    // if (maxTools === 0 || filteredData.length === 0) {
+    //   const chartElement = document.getElementById('user-interactions-chart');
+    //   if (chartElement && chartElement.parentElement) {
+    //     chartElement.parentElement.style.display = 'none';
+    //   }
+    //   return;
+    // }
         
     // Create labels for x-axis (1 to max tools)
     const labels = Array.from({length: maxTools}, (_, i) => (i + 1).toString());
@@ -2700,8 +2716,8 @@ async function initializeCharts(statistics) {
   // Error Distribution Chart
   if (statistics.errors && statistics.errors.by_category) {
     const errorData = Object.entries(statistics.errors.by_category)
-      .sort((a, b) => b[1] - a[1])
-      .filter(([_, count]) => count > 0);
+      .filter(([category, count]) => category !== 'User Interruption' && count > 0)
+      .sort((a, b) => b[1] - a[1]);
         
     if (errorData.length > 0) {
       const colors = [
