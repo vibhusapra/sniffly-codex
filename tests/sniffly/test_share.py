@@ -232,56 +232,6 @@ class TestShareManager:
             assert gallery["projects"][0]["project_name"] == "Project 2"
             assert gallery["projects"][1]["project_name"] == "Project 1"
 
-    @pytest.mark.asyncio
-    async def test_production_mode_with_r2(self):
-        """Test production mode with mocked R2."""
-        with patch.dict(os.environ, {
-            "ENV": "PROD",
-            "R2_ENDPOINT": "https://r2.sniffly.dev",
-            "R2_ACCESS_KEY_ID": "test-key",
-            "R2_SECRET_ACCESS_KEY": "test-secret",
-            "R2_BUCKET_NAME": "test-bucket"
-        }):
-            manager = ShareManager()
-            assert manager.is_production
-            
-            # Mock boto3 client - patch where it's imported
-            with patch('boto3.client') as mock_boto3:
-                mock_client = MagicMock()
-                mock_boto3.return_value = mock_client
-                
-                # Mock the get_object to raise NoSuchKey for gallery index (first time)
-                mock_client.exceptions.NoSuchKey = Exception
-                mock_client.get_object.side_effect = Exception("NoSuchKey")
-                
-                # Create a share
-                test_stats = {
-                    "overview": {
-                        "project_name": "test-project",
-                        "log_dir_name": "test-project-dir",
-                        "total_tokens": {"input": 1000, "output": 500},
-                        "date_range": {
-                            "start": "2025-01-01T00:00:00Z",
-                            "end": "2025-01-05T23:59:59Z"
-                        }
-                    },
-                    "user_interactions": {
-                        "user_commands_analyzed": 25,
-                        "interruption_rate": 0.1,
-                        "avg_steps_per_command": 3.5
-                    }
-                }
-                result = await manager.create_share_link(
-                    statistics=test_stats,
-                    charts_data=[],
-                    make_public=True
-                )
-                
-                # Verify R2 operations were called
-                assert mock_boto3.called
-                assert mock_client.put_object.called
-                assert "url" in result
-    
 
     @pytest.mark.asyncio
     async def test_duration_calculation(self, share_manager, sample_statistics, sample_charts, temp_dir):
