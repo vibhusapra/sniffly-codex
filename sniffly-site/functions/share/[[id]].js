@@ -26,9 +26,11 @@ export async function onRequest(context) {
     const template = await html.text();
     
     // Inject data into template
+    // Escape </script> tags in JSON to prevent breaking the script tag
+    const jsonData = JSON.stringify(data).replace(/<\/script>/gi, '<\\/script>');
     let finalHtml = template.replace(
       '// SHARE_DATA_INJECTION',
-      `window.SHARE_DATA = ${JSON.stringify(data)};`
+      `window.SHARE_DATA = ${jsonData};`
     );
     
     // Replace GA measurement ID
