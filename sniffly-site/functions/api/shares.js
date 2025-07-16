@@ -2,16 +2,23 @@ export async function onRequestPost(context) {
   const { request, env } = context;
   
   try {
+    console.log('Received share upload request');
+    
     // Parse request body
     const body = await request.json();
+    console.log('Request body size:', JSON.stringify(body).length);
+    
     const { share_id, data, is_public } = body;
     
     if (!share_id || !data) {
+      console.error('Missing required fields:', { share_id: !!share_id, data: !!data });
       return new Response(JSON.stringify({ error: 'Missing required fields' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
     }
+    
+    console.log(`Saving share ${share_id} to R2, public: ${is_public}`);
     
     // Save share data to R2
     const shareKey = `shares/${share_id}.json`;
@@ -24,11 +31,14 @@ export async function onRequestPost(context) {
       }
     });
     
+    console.log('Share saved to R2 successfully');
+    
     // Log share creation
     await logShareCreation(env, share_id, data, request);
     
     // If it's a public share, update the gallery
     if (is_public) {
+      console.log('Updating gallery index');
       await updateGalleryIndex(env, share_id, data);
     }
     
@@ -41,8 +51,8 @@ export async function onRequestPost(context) {
     });
     
   } catch (error) {
-    console.error('Error creating share:', error);
-    return new Response(JSON.stringify({ error: 'Internal server error' }), {
+    console.error('Error creating share:', error.message, error.stack);
+    return new Response(JSON.stringify({ error: 'Internal server error', details: error.message }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }
     });
