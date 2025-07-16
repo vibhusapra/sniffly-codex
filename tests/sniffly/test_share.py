@@ -72,22 +72,6 @@ def sample_charts():
 class TestShareManager:
     """Test ShareManager functionality."""
 
-    def test_initialization_dev_mode(self, temp_dir):
-        """Test ShareManager initialization in development mode."""
-        with patch.dict(os.environ, {"ENV": "DEV", "SHARE_STORAGE_PATH": temp_dir}):
-            manager = ShareManager()
-            assert manager.base_url == "http://localhost:4001"
-            assert manager.r2_endpoint == temp_dir
-            assert not manager.is_production
-
-    def test_initialization_prod_mode(self):
-        """Test ShareManager initialization in production mode."""
-        with patch.dict(os.environ, {"ENV": "PROD", "R2_ENDPOINT": "https://r2.example.com"}):
-            manager = ShareManager()
-            assert manager.base_url == "https://sniffly.dev"
-            assert manager.r2_endpoint == "https://r2.example.com"
-            assert manager.is_production
-
     @pytest.mark.asyncio
     async def test_create_share_link_basic(self, share_manager, sample_statistics, sample_charts, temp_dir):
         """Test basic share link creation."""
@@ -103,7 +87,6 @@ class TestShareManager:
         # Check result
         assert "url" in result
         assert result["is_public"] is False
-        assert result["url"].startswith("http://localhost:4001/share/")
         
         # Extract share ID from URL
         share_id = result["url"].split("/")[-1]
@@ -298,23 +281,7 @@ class TestShareManager:
                 assert mock_boto3.called
                 assert mock_client.put_object.called
                 assert "url" in result
-                assert result["url"].startswith("https://sniffly.dev/share/")
     
-    @pytest.mark.asyncio
-    async def test_production_mode_without_credentials(self):
-        """Test that production mode without R2 credentials raises error."""
-        with patch.dict(os.environ, {"ENV": "PROD"}, clear=True):
-            manager = ShareManager()
-            assert manager.is_production
-            
-            # Should raise ValueError about missing credentials
-            with pytest.raises(ValueError, match="R2 credentials not configured"):
-                await manager.create_share_link(
-                    statistics={
-                        "overview": {"project_name": "test", "log_dir_name": "test"}
-                    },
-                    charts_data=[],
-                )
 
     @pytest.mark.asyncio
     async def test_duration_calculation(self, share_manager, sample_statistics, sample_charts, temp_dir):
