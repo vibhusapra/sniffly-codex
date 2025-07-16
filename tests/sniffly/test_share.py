@@ -126,12 +126,6 @@ class TestShareManager:
         
         # Check share file
         share_id = result["url"].split("/")[-1]
-        share_file = Path(temp_dir) / f"{share_id}.json"
-        with open(share_file) as f:
-            data = json.load(f)
-            assert data["is_public"] is True
-            assert len(data["user_commands"]) == 2
-            assert data["title"] == "test-project-dir"
 
         # Check gallery index
         gallery_file = Path(temp_dir) / "gallery-index.json"

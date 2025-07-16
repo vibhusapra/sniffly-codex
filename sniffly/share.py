@@ -20,6 +20,8 @@ if env_file.exists():
     print(f"Loading .env.sniffly.dev from: {env_file}")
     load_dotenv(env_file)
     print(f"After loading, ENV = {os.getenv('ENV')}")
+else:
+    print(f".env.sniffly.dev not found at: {env_file}")
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +29,12 @@ logger = logging.getLogger(__name__)
 class ShareManager:
     def __init__(self):
         from sniffly.config import Config
-
         config = Config()
-
+        
         # Check environment
         # For PyPI users, we should default to production mode
         env = os.getenv("ENV", "PROD" if not env_file.exists() else "DEV")
+        logger.info(f"ShareManager: ENV={env}, env_file={env_file}, exists={env_file.exists()}")
 
         if env == "DEV":
             # Development mode
@@ -52,6 +54,8 @@ class ShareManager:
                 # PyPI users use public API
                 self.r2_endpoint = config.get("share_api_url", "https://sniffly.dev")
             self.is_production = True
+            logger.info(f"ShareManager: Production mode, base_url={self.base_url}, r2_endpoint={self.r2_endpoint}")
+
 
     async def create_share_link(
         self,
@@ -75,7 +79,7 @@ class ShareManager:
             "user_commands": user_commands if include_commands else [],
             "version": __version__,
             "is_public": make_public,
-            "title": self._generate_title(statistics) if make_public else None,
+            "title": (project_name or self._generate_title(statistics)) if make_public else None,
             "description": self._generate_description(statistics) if make_public else None,
             "project_name": project_name or self._get_project_name(statistics),
         }
@@ -156,10 +160,10 @@ class ShareManager:
     async def _upload_via_api(self, share_id: str, data: dict[str, Any]):
         """Upload share data via public API endpoint (for PyPI users)"""
         import httpx
-
+        
         # API endpoint for share uploads
         api_url = f"{self.r2_endpoint}/api/shares"
-
+        
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Prepare the share data with metadata
@@ -168,15 +172,15 @@ class ShareManager:
                     "data": data,
                     "is_public": data.get("is_public", False),
                 }
-
+                
                 # POST to the API endpoint
                 response = await client.post(api_url, json=payload)
                 response.raise_for_status()
-
+                
                 logger.info(f"Uploaded share via API: {share_id}")
-
+                
                 # Gallery update is handled by the API endpoint itself
-
+                    
         except httpx.HTTPError as e:
             logger.error(f"Failed to upload share via API: {e}")
             raise Exception(f"Failed to upload share: {str(e)}")
@@ -435,7 +439,7 @@ class ShareManager:
         try:
             # Get current date for log file name (one file per day)
             log_date = datetime.utcnow().strftime("%Y-%m-%d")
-            log_key = f"share-logs/{log_date}.jsonl"
+            log_key = f"logs/shares-{log_date}.jsonl"
 
             # Download existing log file or start new
             existing_log = ""
