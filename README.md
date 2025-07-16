@@ -10,12 +10,12 @@ Make sure you have `uv` installed! https://github.com/astral-sh/uv
 
 ```bash
 # One-time execution (no installation needed)
-uvx sniffly init
+uvx sniffly@latest init
 ```
 
 ```bash
 # Install the package
-uv tool install sniffly
+uv tool install sniffly@latest
 sniffly init
 ```
 
