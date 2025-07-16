@@ -159,8 +159,8 @@ def get_share_stats() -> dict[str, Any]:
         bucket = os.getenv("R2_BUCKET_NAME", "sniffly-shares")
 
         try:
-            # Get all log files from logs/ directory
-            response = client.list_objects_v2(Bucket=bucket, Prefix="logs/shares-")
+            # Get all log files from share-logs/ directory
+            response = client.list_objects_v2(Bucket=bucket, Prefix="share-logs/")
             content = ""
 
             # Read all log files
@@ -513,8 +513,8 @@ async def get_all_shares(admin: dict[str, Any] = Depends(require_admin)):
         base_url = "https://sniffly.dev"
 
         try:
-            # Get all log files from logs/ directory
-            response = client.list_objects_v2(Bucket=bucket, Prefix="logs/shares-")
+            # Get all log files from share-logs/ directory
+            response = client.list_objects_v2(Bucket=bucket, Prefix="share-logs/")
             content = ""
 
             # Read all log files

@@ -20,8 +20,6 @@ if env_file.exists():
     print(f"Loading .env.sniffly.dev from: {env_file}")
     load_dotenv(env_file)
     print(f"After loading, ENV = {os.getenv('ENV')}")
-else:
-    print(f".env.sniffly.dev not found at: {env_file}")
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +33,6 @@ class ShareManager:
         # Check environment
         # For PyPI users, we should default to production mode
         env = os.getenv("ENV", "PROD" if not env_file.exists() else "DEV")
-        logger.info(f"ShareManager: ENV={env}, env_file={env_file}, exists={env_file.exists()}")
 
         if env == "DEV":
             # Development mode
@@ -55,7 +52,6 @@ class ShareManager:
                 # PyPI users use public API
                 self.r2_endpoint = config.get("share_api_url", "https://sniffly.dev")
             self.is_production = True
-            logger.info(f"ShareManager: Production mode, base_url={self.base_url}, r2_endpoint={self.r2_endpoint}")
 
     async def create_share_link(
         self,
@@ -439,7 +435,7 @@ class ShareManager:
         try:
             # Get current date for log file name (one file per day)
             log_date = datetime.utcnow().strftime("%Y-%m-%d")
-            log_key = f"logs/shares-{log_date}.jsonl"
+            log_key = f"share-logs/{log_date}.jsonl"
 
             # Download existing log file or start new
             existing_log = ""
