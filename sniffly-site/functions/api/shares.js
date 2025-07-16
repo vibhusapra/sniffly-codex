@@ -22,16 +22,23 @@ export async function onRequestPost(context) {
     
     // Save share data to R2
     const shareKey = `shares/${share_id}.json`;
-    await env.R2_BUCKET.put(shareKey, JSON.stringify(data, null, 2), {
-      httpMetadata: {
-        contentType: 'application/json',
-      },
-      customMetadata: {
-        'is-public': is_public ? 'true' : 'false'
-      }
-    });
     
-    console.log('Share saved to R2 successfully');
+    try {
+      const result = await env.R2_BUCKET.put(shareKey, JSON.stringify(data, null, 2), {
+        httpMetadata: {
+          contentType: 'application/json',
+        },
+        customMetadata: {
+          'is-public': is_public ? 'true' : 'false'
+        }
+      });
+      
+      console.log('R2 put result:', result);
+      console.log('Share saved to R2 successfully');
+    } catch (r2Error) {
+      console.error('R2 put failed:', r2Error);
+      throw new Error(`Failed to save to R2: ${r2Error.message}`);
+    }
     
     // Log share creation
     await logShareCreation(env, share_id, data, request);

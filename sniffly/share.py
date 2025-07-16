@@ -29,10 +29,12 @@ logger = logging.getLogger(__name__)
 class ShareManager:
     def __init__(self):
         from sniffly.config import Config
+
         config = Config()
-        
+
         # Check environment
-        env = os.getenv("ENV", "DEV")
+        # For PyPI users, we should default to production mode
+        env = os.getenv("ENV", "PROD" if not env_file.exists() else "DEV")
         logger.info(f"ShareManager: ENV={env}, env_file={env_file}, exists={env_file.exists()}")
 
         if env == "DEV":
@@ -54,7 +56,6 @@ class ShareManager:
                 self.r2_endpoint = config.get("share_api_url", "https://sniffly.dev")
             self.is_production = True
             logger.info(f"ShareManager: Production mode, base_url={self.base_url}, r2_endpoint={self.r2_endpoint}")
-
 
     async def create_share_link(
         self,
@@ -159,10 +160,10 @@ class ShareManager:
     async def _upload_via_api(self, share_id: str, data: dict[str, Any]):
         """Upload share data via public API endpoint (for PyPI users)"""
         import httpx
-        
+
         # API endpoint for share uploads
         api_url = f"{self.r2_endpoint}/api/shares"
-        
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Prepare the share data with metadata
@@ -171,15 +172,15 @@ class ShareManager:
                     "data": data,
                     "is_public": data.get("is_public", False),
                 }
-                
+
                 # POST to the API endpoint
                 response = await client.post(api_url, json=payload)
                 response.raise_for_status()
-                
+
                 logger.info(f"Uploaded share via API: {share_id}")
-                
+
                 # Gallery update is handled by the API endpoint itself
-                    
+
         except httpx.HTTPError as e:
             logger.error(f"Failed to upload share via API: {e}")
             raise Exception(f"Failed to upload share: {str(e)}")
@@ -187,8 +188,11 @@ class ShareManager:
     async def _add_to_public_gallery(self, share_id: str, data: dict[str, Any]):
         """Add project to public gallery index"""
         if self.is_production:
-            # Production: Update gallery in R2
-            await self._update_r2_gallery(share_id, data)
+            # Check if we have R2 credentials (internal use)
+            if os.getenv("R2_ACCESS_KEY_ID"):
+                # Direct R2 update
+                await self._update_r2_gallery(share_id, data)
+            # For API users, gallery update is handled by the API endpoint itself
         else:
             # Development: Update local gallery file
             gallery_file = Path(self.r2_endpoint) / "gallery-index.json"
