@@ -18,7 +18,7 @@ class PricingService:
     """Service for managing dynamic model pricing with caching."""
 
     def __init__(self):
-        self.cache_dir = Path.home() / ".claude-analytics" / "cache"
+        self.cache_dir = Path.home() / ".sniffly" / "cache"
         self.pricing_cache_file = self.cache_dir / "pricing.json"
         self.litellm_url = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
         self.cache_duration = timedelta(hours=24)

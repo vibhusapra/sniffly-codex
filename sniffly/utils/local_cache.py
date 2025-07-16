@@ -26,7 +26,7 @@ class LocalCacheService:
     - Metadata tracking for cache validity
 
     Cache Structure:
-    ~/.claude-analytics/cache/
+    ~/.sniffly/cache/
     └── [md5_hash]/              # Hash of log directory path
         ├── metadata.json        # File checksums and cache timestamp
         ├── stats.json          # Cached statistics
@@ -35,8 +35,8 @@ class LocalCacheService:
 
     def __init__(self, cache_dir: str = None):
         if cache_dir is None:
-            # Default to ~/.claude-analytics/cache/
-            self.cache_dir = Path.home() / ".claude-analytics" / "cache"
+            # Default to ~/.sniffly/cache/
+            self.cache_dir = Path.home() / ".sniffly" / "cache"
         else:
             self.cache_dir = Path(cache_dir)
 

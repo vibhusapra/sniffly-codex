@@ -45,7 +45,7 @@ const ExportModule = {
       const time = new Date().toISOString().split('T')[1].split(':').slice(0,2).join('-');
             
       // Get log directory name from current project
-      let logDirName = 'claude-analytics';
+      let logDirName = 'sniffly';
       if (statistics.overview.log_dir_name) {
         logDirName = statistics.overview.log_dir_name;
       } else if (window.location.port === '8081') {

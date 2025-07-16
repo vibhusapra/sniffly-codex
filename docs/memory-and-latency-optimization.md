@@ -56,7 +56,7 @@ Located in `sniffly/utils/local_cache.py`:
 - **Validation:** Timestamp checking for freshness
 
 ```
-~/.claude-analytics/cache/
+~/.sniffly/cache/
 ├── pricing.json                 # Pricing data cache
 └── [md5_hash]/                  # Per-project cache
     ├── metadata.json            # File checksums and timestamps

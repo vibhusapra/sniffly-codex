@@ -38,7 +38,7 @@ def init(port, no_browser, clear_cache):
         from pathlib import Path
 
         # Clear local cache directory
-        cache_dir = Path.home() / ".claude-analytics" / "cache"
+        cache_dir = Path.home() / ".sniffly" / "cache"
         if cache_dir.exists():
             shutil.rmtree(cache_dir)
             click.echo(f"✅ Cleared local cache at {cache_dir}")
