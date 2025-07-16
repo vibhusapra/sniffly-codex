@@ -6,17 +6,20 @@ Analyze Claude Code logs to help you use Claude Code better.
 - Requirement: Python 3.10+
 
 ### With UV (recommended)
+Make sure you have `uv` installed! https://github.com/astral-sh/uv
+
 ```bash
 # One-time execution (no installation needed)
 uvx sniffly init
 ```
-Access your dashboard at http://localhost:8081 (or whichever port port you choose).
 
 ```bash
 # Install the package
 uv tool install sniffly
 sniffly init
 ```
+
+After running `sniffly init`, access your dashboard at http://localhost:8081 (or whichever port you choose).
 
 ### With pip
 

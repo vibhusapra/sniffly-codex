@@ -22,6 +22,9 @@ DEFAULTS = {
     "enable_background_processing": True,
     "cache_warm_on_startup": 3,
     "log_level": "INFO",
+    "share_base_url": "https://sniffly.dev",
+    "share_api_url": "https://sniffly.dev",
+    "share_enabled": True,
 }
 
 # Map config keys to environment variable names
@@ -37,6 +40,9 @@ ENV_MAPPINGS = {
     "enable_background_processing": "ENABLE_BACKGROUND_PROCESSING",
     "cache_warm_on_startup": "CACHE_WARM_ON_STARTUP",
     "log_level": "LOG_LEVEL",
+    "share_base_url": "SHARE_BASE_URL",
+    "share_api_url": "SHARE_API_URL",
+    "share_enabled": "SHARE_ENABLED",
 }
 
 
