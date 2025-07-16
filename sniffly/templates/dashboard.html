@@ -1198,6 +1198,11 @@
         // Share options modal
         async function showShareOptionsModal() {
             return new Promise((resolve) => {
+                // Get the default project name
+                const defaultProjectName = window.statistics?.overview?.log_dir_name || 
+                                         window.statistics?.overview?.project_name || 
+                                         'Untitled Project';
+                
                 const modal = document.createElement('div');
                 modal.className = 'modal';
                 modal.style.display = 'block';
@@ -1212,7 +1217,7 @@
                             </label>
                             <input type="text" 
                                    id="project-name-input" 
-                                   value="${statistics.overview.log_dir_name || statistics.overview.project_name || 'Untitled Project'}"
+                                   value="${defaultProjectName.replace(/"/g, '&quot;')}"
                                    placeholder="Enter project name"
                                    style="width: 100%; padding: 0.5rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.95rem;">
                         </div>
@@ -1264,7 +1269,8 @@
                 document.body.appendChild(modal);
                 
                 window.confirmShare = () => {
-                    const projectName = document.getElementById('project-name-input').value.trim() || 'Untitled Project';
+                    const projectNameInput = document.getElementById('project-name-input');
+                    const projectName = (projectNameInput?.value || '').trim() || 'Untitled Project';
                     const includeCommands = document.getElementById('include-commands-checkbox').checked;
                     const makePublic = document.getElementById('make-public-checkbox').checked;
                     document.body.removeChild(modal);
