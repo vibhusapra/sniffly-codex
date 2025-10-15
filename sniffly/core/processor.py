@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Claude log processor with advanced message deduplication and statistics generation.
+Log processor for Claude and Codex CLI logs with advanced message deduplication and statistics generation.
 
 This module handles:
 - Streaming message deduplication (merging messages with same ID)
@@ -13,6 +13,7 @@ This module handles:
 
 import glob
 import hashlib
+import json
 import logging
 import os
 import re
@@ -196,6 +197,7 @@ class ClaudeLogProcessor:
             "daily_tokens": defaultdict(lambda: defaultdict(int)),  # UTC-based, will be recalculated with timezone
             "model_usage": defaultdict(lambda: defaultdict(int)),
         }
+        self.log_format = "claude"
 
     def _update_running_stats(self, message: dict):
         """Update running statistics as we process messages.
@@ -247,6 +249,7 @@ class ClaudeLogProcessor:
             Tuple of (messages, statistics) where messages are sorted by timestamp
         """
         files = sorted(glob.glob(os.path.join(self.log_directory, "*.jsonl")))
+        self.log_format = self._detect_log_format(files) if files else "claude"
 
         # Initialize statistics tracking (for Phase 1 optimizations)
         self.statistics = {
@@ -275,14 +278,24 @@ class ClaudeLogProcessor:
             session_id = os.path.basename(file_path).replace(".jsonl", "")
             session_messages = []
             self._process_file(file_path, session_id, session_messages)
+            self.statistics["files_processed"] += 1
 
-            # Add session metadata
-            session_metadata[session_id] = {
-                "index": file_index,
-                "file_path": file_path,
-                "message_count": len(session_messages),
-                "continues_from": continuations.get(session_id),
-            }
+            # Build metadata for each session observed in this file
+            per_session_counts = defaultdict(int)
+            for msg in session_messages:
+                sid = msg.get("session_id") or session_id
+                per_session_counts[sid] += 1
+
+            if not per_session_counts:
+                per_session_counts[session_id] = 0
+
+            for sid, count in per_session_counts.items():
+                session_metadata[sid] = {
+                    "index": file_index,
+                    "file_path": file_path,
+                    "message_count": count if count else len(session_messages),
+                    "continues_from": continuations.get(sid) or continuations.get(session_id),
+                }
 
             all_messages.extend(session_messages)
 
@@ -337,6 +350,31 @@ class ClaudeLogProcessor:
 
         return final_messages, statistics
 
+    def _detect_log_format(self, files: list[str]) -> str:
+        """Determine whether the log directory contains Claude or Codex CLI logs."""
+        for file_path in files:
+            if self._is_codex_file(file_path):
+                return "codex"
+        return "claude"
+
+    def _is_codex_file(self, file_path: str) -> bool:
+        """Detect if a file follows the Codex CLI rollout structure."""
+        try:
+            with open(file_path, "rb") as f:
+                for _ in range(5):
+                    line = f.readline()
+                    if not line:
+                        break
+                    data = orjson.loads(line)
+                    if isinstance(data, dict):
+                        if isinstance(data.get("payload"), dict):
+                            return True
+                        if data.get("message"):
+                            return False
+        except Exception:
+            return False
+        return False
+
     def _process_file(self, file_path: str, session_id: str, raw_messages: list[dict]):
         """Process a single log file and extract messages.
 
@@ -351,6 +389,10 @@ class ClaudeLogProcessor:
             session_id: Extracted session ID from filename
             raw_messages: List to append extracted messages to
         """
+        if self.log_format == "codex" or self._is_codex_file(file_path):
+            if self._process_codex_file(file_path, session_id, raw_messages):
+                return
+
         last_model_seen = "N/A"  # Track last model in session for summaries
 
         with open(file_path, "rb") as f:  # Binary mode for orjson
@@ -420,6 +462,281 @@ class ClaudeLogProcessor:
             "is_interruption": False,
             "leaf_uuid": data.get("leafUuid", ""),
         }
+
+    def _process_codex_file(self, file_path: str, session_id: str, raw_messages: list[dict]) -> bool:
+        """Process a Codex CLI rollout log file."""
+        state = {
+            "fallback_session_id": session_id,
+            "session_id": session_id,
+            "cwd": "",
+            "model": "gpt-5-codex",
+            "pending_reasoning": None,
+            "pending_tokens": None,
+            "tool_calls": {},
+        }
+
+        handled = False
+
+        try:
+            with open(file_path, "rb") as f:
+                for line_num, line in enumerate(f, 1):
+                    try:
+                        data = orjson.loads(line)
+                    except Exception as exc:
+                        logger.info(f"Error parsing Codex log line {line_num} in {file_path}: {exc}")
+                        self.statistics["errors"] += 1
+                        continue
+
+                    event_type = data.get("type")
+                    payload = data.get("payload", {}) or {}
+                    timestamp = data.get("timestamp", "")
+
+                    if event_type == "session_meta":
+                        state["session_id"] = payload.get("id") or state["fallback_session_id"]
+                        state["cwd"] = payload.get("cwd", state["cwd"])
+                        state["tool_calls"].clear()
+                        continue
+
+                    if event_type == "turn_context":
+                        state["cwd"] = payload.get("cwd", state["cwd"])
+                        state["model"] = payload.get("model", state["model"])
+                        continue
+
+                    if event_type == "event_msg":
+                        subtype = payload.get("type")
+                        if subtype == "agent_reasoning":
+                            state["pending_reasoning"] = payload.get("text", "")
+                        elif subtype == "token_count":
+                            token_info = payload.get("info", {}) or {}
+                            pending = token_info.get("last_token_usage") or token_info.get("total_token_usage")
+                            if isinstance(pending, dict):
+                                state["pending_tokens"] = pending
+                        continue
+
+                    if event_type != "response_item":
+                        continue
+
+                    handled = True
+                    item_type = payload.get("type")
+
+                    if item_type == "reasoning":
+                        reasoning_text = self._extract_codex_reasoning(payload)
+                        if reasoning_text:
+                            state["pending_reasoning"] = reasoning_text
+                        continue
+
+                    if item_type == "function_call":
+                        call_id = payload.get("call_id") or payload.get("id") or ""
+                        arguments = self._parse_codex_arguments(payload.get("arguments"))
+                        tool_name = payload.get("name", "tool")
+                        state["tool_calls"][call_id] = {"name": tool_name, "input": arguments}
+
+                        message = self._create_codex_message(
+                            state, timestamp, role="assistant", uuid=call_id, parent_uuid=payload.get("parent_id")
+                        )
+                        message["content"] = self._format_codex_tool_call(tool_name, arguments)
+                        message["tools"].append({"name": tool_name, "input": arguments, "id": call_id})
+                        if call_id:
+                            message["message_id"] = call_id
+                        message["_raw_data"] = data
+                        if isinstance(payload, dict):
+                            message["_raw_data"]["message"] = payload
+                        self._apply_codex_tokens(state, message)
+                        raw_messages.append(message)
+                        self._update_running_stats(message)
+                        continue
+
+                    if item_type == "function_call_output":
+                        call_id = payload.get("call_id") or ""
+                        output_text, is_error = self._parse_codex_output(payload.get("output"))
+                        tool_info = state["tool_calls"].get(call_id, {"name": payload.get("name", "tool"), "input": {}})
+
+                        message = self._create_codex_message(
+                            state, timestamp, role="user", uuid=call_id, parent_uuid=payload.get("parent_id")
+                        )
+                        message["content"] = output_text
+                        message["tools"].append(
+                            {
+                                "name": tool_info.get("name", "tool"),
+                                "input": tool_info.get("input", {}),
+                                "id": call_id,
+                            }
+                        )
+                        message["has_tool_result"] = True
+                        message["error"] = is_error
+                        message["_raw_data"] = data
+                        if isinstance(payload, dict):
+                            message["_raw_data"]["message"] = payload
+                        self._apply_codex_tokens(state, message)
+                        raw_messages.append(message)
+                        self._update_running_stats(message)
+                        state["tool_calls"].pop(call_id, None)
+                        continue
+
+                    if item_type == "message":
+                        role = payload.get("role", "assistant")
+                        content = self._flatten_codex_content(payload.get("content"))
+                        codex_session_id = state.get("session_id") or state.get("fallback_session_id")
+
+                        message = self._create_codex_message(
+                            state,
+                            timestamp,
+                            role="assistant" if role == "assistant" else "user",
+                            uuid=payload.get("id", ""),
+                            parent_uuid=payload.get("parent_id"),
+                        )
+                        message["_raw_data"] = data
+                        if isinstance(payload, dict):
+                            message["_raw_data"]["message"] = payload
+                        message["session_id"] = codex_session_id
+
+                        if message["type"] == "assistant":
+                            reasoning_text = state.get("pending_reasoning")
+                            if reasoning_text:
+                                combined = [f"[Reasoning]\n{reasoning_text.strip()}" if reasoning_text else ""]
+                                if content:
+                                    combined.append(content)
+                                message["content"] = "\n\n".join([part for part in combined if part]).strip()
+                            else:
+                                message["content"] = content
+                            state["pending_reasoning"] = None
+                            self._apply_codex_tokens(state, message)
+                        else:
+                            message["content"] = content
+                            state["pending_reasoning"] = None
+
+                        raw_messages.append(message)
+                        self._update_running_stats(message)
+                        continue
+
+        except OSError as exc:
+            logger.info(f"Error opening Codex log {file_path}: {exc}")
+            return False
+
+        return handled
+
+    def _create_codex_message(
+        self,
+        state: dict,
+        timestamp: str,
+        role: str = "assistant",
+        uuid: str | None = None,
+        parent_uuid: str | None = None,
+    ) -> dict:
+        model = state.get("model", "N/A") if role == "assistant" else "N/A"
+        session_identifier = state.get("session_id") or state.get("fallback_session_id")
+        return {
+            "session_id": session_identifier,
+            "type": role,
+            "timestamp": timestamp or "",
+            "model": model,
+            "content": "",
+            "tools": [],
+            "tokens": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
+            "cwd": state.get("cwd", ""),
+            "uuid": uuid or "",
+            "parent_uuid": parent_uuid,
+            "is_sidechain": False,
+            "has_tool_result": False,
+            "error": False,
+        }
+
+    def _apply_codex_tokens(self, state: dict, message: dict):
+        if message.get("type") != "assistant":
+            state["pending_tokens"] = None
+            return
+
+        tokens = state.pop("pending_tokens", None)
+        if not isinstance(tokens, dict):
+            return
+
+        message["tokens"]["input"] = tokens.get("input_tokens", 0)
+        message["tokens"]["output"] = tokens.get("output_tokens", 0)
+        message["tokens"]["cache_read"] = tokens.get("cached_input_tokens", 0)
+        message["tokens"]["cache_creation"] = tokens.get("cache_creation_input_tokens", 0)
+
+    def _flatten_codex_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content.strip()
+
+        parts: list[str] = []
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if text:
+                        parts.append(str(text))
+                elif isinstance(item, str):
+                    parts.append(item)
+
+        return "\n".join(parts).strip()
+
+    def _parse_codex_arguments(self, arguments: Any) -> Any:
+        if isinstance(arguments, (dict, list)):
+            return arguments
+        if isinstance(arguments, str):
+            stripped = arguments.strip()
+            if stripped:
+                try:
+                    return json.loads(stripped)
+                except (json.JSONDecodeError, TypeError):
+                    return stripped
+        return arguments
+
+    def _format_codex_tool_call(self, name: str, arguments: Any) -> str:
+        if isinstance(arguments, (dict, list)):
+            try:
+                preview = json.dumps(arguments, ensure_ascii=False)
+            except (TypeError, ValueError):
+                preview = str(arguments)
+        else:
+            preview = str(arguments)
+        return f"[Tool Call] {name or 'tool'} {preview}".strip()
+
+    def _parse_codex_output(self, output: Any) -> tuple[str, bool]:
+        if isinstance(output, dict):
+            text = output.get("output")
+            metadata = output.get("metadata", {})
+            exit_code = metadata.get("exit_code")
+            content = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
+            is_error = isinstance(exit_code, int) and exit_code != 0
+            return content.strip(), is_error
+
+        if isinstance(output, str):
+            stripped = output.strip()
+            if stripped.startswith("{") and stripped.endswith("}"):
+                try:
+                    parsed = json.loads(stripped)
+                    text = parsed.get("output")
+                    metadata = parsed.get("metadata", {})
+                    exit_code = metadata.get("exit_code")
+                    content = text if isinstance(text, str) else json.dumps(text, ensure_ascii=False)
+                    is_error = isinstance(exit_code, int) and exit_code != 0
+                    if not is_error and isinstance(parsed.get("error"), bool):
+                        is_error = parsed["error"]
+                    return content.strip(), bool(is_error)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    pass
+
+            lower = stripped.lower()
+            is_error = "failed" in lower or "error" in lower
+            return stripped, is_error
+
+        return str(output), False
+
+    def _extract_codex_reasoning(self, payload: dict) -> str | None:
+        summary = payload.get("summary")
+        if isinstance(summary, list):
+            parts = []
+            for item in summary:
+                if isinstance(item, dict) and item.get("text"):
+                    parts.append(str(item["text"]))
+            if parts:
+                return "\n".join(parts)
+        content = payload.get("content")
+        if content:
+            return self._flatten_codex_content(content)
+        return None
 
     def _extract_message(self, data: dict, session_id: str) -> dict | None:
         """Extract message data from log entry.

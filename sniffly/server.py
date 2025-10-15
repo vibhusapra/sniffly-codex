@@ -27,7 +27,13 @@ from sniffly.config import Config
 from sniffly.core.processor import ClaudeLogProcessor
 from sniffly.utils.cache_warmer import warm_recent_projects
 from sniffly.utils.local_cache import LocalCacheService
-from sniffly.utils.log_finder import find_claude_logs
+from sniffly.utils.log_finder import (
+    describe_log_path,
+    find_claude_logs,
+    get_all_projects_with_metadata,
+    resolve_log_slug,
+    slugify_log_path,
+)
 from sniffly.utils.memory_cache import MemoryCache
 
 # Load environment variables
@@ -104,8 +110,6 @@ async def background_stats_processor():
     while True:
         try:
             # Get all projects
-            from sniffly.utils.log_finder import get_all_projects_with_metadata
-
             all_projects = get_all_projects_with_metadata()
 
             # Find projects without cached stats
@@ -189,7 +193,7 @@ async def dashboard_page():
 @app.get("/project/{project_name:path}")
 async def project_dashboard(project_name: str):
     """Serve the dashboard for a specific project"""
-    # The project_name is the directory name from .claude/projects
+    # The project_name is the URL slug representing the selected log directory
     # The dashboard.html will use JavaScript to extract this from the URL
     return FileResponse(os.path.join(BASE_DIR, "templates", "dashboard.html"))
 
@@ -237,12 +241,16 @@ async def get_current_project():
     if not current_project_path:
         return JSONResponse({"status": "no_project", "message": "No project selected"})
 
+    project_info = describe_log_path(current_log_path) if current_log_path else None
+
     return JSONResponse(
         {
             "status": "active",
             "project_path": current_project_path,
             "log_path": current_log_path,
-            "log_dir_name": Path(current_log_path).name if current_log_path else None,
+            "log_dir_name": project_info["dir_name"] if project_info else None,
+            "display_name": project_info["display_name"] if project_info else current_project_path,
+            "provider": project_info["provider"] if project_info else "unknown",
         }
     )
 
@@ -254,35 +262,36 @@ async def set_project_by_dir(data: dict[str, str]):
     global current_project_path, current_log_path
 
     dir_name = data.get("dir_name")
-    if not dir_name:
-        raise HTTPException(status_code=400, detail="Directory name is required")
+    explicit_log_path = data.get("log_path")
 
-    # Build the log path
-    claude_base = Path.home() / ".claude" / "projects"
-    log_path = claude_base / dir_name
+    if not dir_name and not explicit_log_path:
+        raise HTTPException(status_code=400, detail="Directory identifier is required")
 
-    if not log_path.exists() or not log_path.is_dir():
+    if explicit_log_path:
+        project_info = describe_log_path(explicit_log_path)
+    else:
+        project_info = resolve_log_slug(dir_name)
+
+    if not project_info:
         raise HTTPException(status_code=404, detail=f"Log directory not found: {dir_name}")
 
-    # Check if it has log files
+    log_path = Path(project_info["log_path"])
+
+    if not log_path.exists() or not log_path.is_dir():
+        raise HTTPException(status_code=404, detail=f"Log directory not found: {project_info['log_path']}")
+
     log_files = list(log_path.glob("*.jsonl"))
     if not log_files:
-        raise HTTPException(status_code=404, detail=f"No log files found in directory: {dir_name}")
+        raise HTTPException(
+            status_code=404, detail=f"No log files found in directory: {project_info['log_path']}"
+        )
 
-    # Try to convert back to project path (best effort)
-    if dir_name.startswith("-"):
-        # Convert from hashed format
-        project_path = dir_name[1:].replace("-", "/")
-    else:
-        # Use directory name as is
-        project_path = dir_name
-
-    current_project_path = project_path
+    current_project_path = project_info["display_name"]
     current_log_path = str(log_path)
 
     # Pre-warm the current project immediately
     if not memory_cache.get(current_log_path):
-        logger.debug(f"Pre-warming {dir_name}...")
+        logger.debug(f"Pre-warming {project_info['dir_name']}...")
         try:
             processor = ClaudeLogProcessor(current_log_path)
             messages, stats = processor.process_logs()
@@ -293,7 +302,7 @@ async def set_project_by_dir(data: dict[str, str]):
 
             # Then store in memory cache
             memory_cache.put(current_log_path, messages, stats)
-            logger.debug(f"Successfully pre-warmed {dir_name}")
+            logger.debug(f"Successfully pre-warmed {project_info['dir_name']}")
         except Exception as e:
             logger.debug(f"Failed to pre-warm: {e}")
 
@@ -303,10 +312,12 @@ async def set_project_by_dir(data: dict[str, str]):
     return JSONResponse(
         {
             "status": "success",
-            "project_path": project_path,
+            "project_path": current_project_path,
             "log_path": str(log_path),
-            "log_dir_name": dir_name,
-            "message": f"Now analyzing logs from: {dir_name}",
+            "log_dir_name": project_info["dir_name"],
+            "display_name": project_info["display_name"],
+            "provider": project_info["provider"],
+            "message": f"Now analyzing logs from: {project_info['display_name']}",
         }
     )
 
@@ -717,8 +728,10 @@ async def get_jsonl_files(project: str | None = None):
 
     # If specific project provided, use that
     if project:
-        claude_base = Path.home() / ".claude" / "projects"
-        log_path = str(claude_base / project)
+        resolved = resolve_log_slug(project)
+        if not resolved:
+            raise HTTPException(status_code=404, detail=f"Log directory not found: {project}")
+        log_path = resolved["log_path"]
 
     if not log_path:
         raise HTTPException(status_code=400, detail="No project selected")
@@ -816,8 +829,10 @@ async def get_jsonl_content(file: str, project: str | None = None):
 
     # If specific project provided, use that
     if project:
-        claude_base = Path.home() / ".claude" / "projects"
-        log_path = str(claude_base / project)
+        resolved = resolve_log_slug(project)
+        if not resolved:
+            raise HTTPException(status_code=404, detail=f"Log directory not found: {project}")
+        log_path = resolved["log_path"]
 
     if not log_path:
         raise HTTPException(status_code=400, detail="No project selected")
@@ -841,29 +856,56 @@ async def get_jsonl_content(file: str, project: str | None = None):
         session_id = None
         cwd = None
 
+        log_format = "unknown"
+
         with open(file_path) as f:
             for line_num, line in enumerate(f, 1):
                 try:
                     data = json.loads(line)
                     lines.append(data)
 
-                    # Extract metadata
-                    if line_num == 1:
-                        # Use filename as session ID since files can contain multiple sessions
+                    if log_format == "unknown":
+                        log_format = "codex" if isinstance(data.get("payload"), dict) else "claude"
+
+                    if line_num == 1 and session_id is None:
                         session_id = file_path.stem
-                        cwd = data.get("cwd", "")
 
-                    # Track timestamps
-                    if data.get("timestamp"):
+                    # Track timestamps (shared)
+                    timestamp = data.get("timestamp")
+                    if timestamp:
                         if not first_timestamp:
-                            first_timestamp = data["timestamp"]
-                        last_timestamp = data["timestamp"]
+                            first_timestamp = timestamp
+                        last_timestamp = timestamp
 
-                    # Count types
-                    if data.get("type") == "user":
-                        user_count += 1
-                    elif data.get("type") == "assistant":
-                        assistant_count += 1
+                    if log_format == "claude":
+                        if line_num == 1:
+                            cwd = data.get("cwd", "")
+
+                        message_type = data.get("type")
+                        if message_type == "user":
+                            user_count += 1
+                        elif message_type == "assistant":
+                            assistant_count += 1
+
+                    else:  # codex format
+                        payload = data.get("payload", {}) or {}
+                        event_type = data.get("type")
+
+                        if event_type == "session_meta":
+                            session_id = payload.get("id", session_id)
+                            cwd = payload.get("cwd", cwd)
+                        elif event_type == "turn_context":
+                            cwd = payload.get("cwd", cwd)
+                        elif event_type == "response_item":
+                            item_type = payload.get("type")
+                            role = payload.get("role")
+                            if item_type == "message":
+                                if role == "user":
+                                    user_count += 1
+                                elif role == "assistant":
+                                    assistant_count += 1
+                        elif event_type == "event_msg" and payload.get("type") == "user_message":
+                            user_count += 1
                 except json.JSONDecodeError:
                     # Include malformed lines for debugging
                     lines.append({"error": "JSON decode error", "line_number": line_num, "raw": line[:200]})
@@ -907,38 +949,31 @@ async def get_jsonl_content(file: str, project: str | None = None):
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
 
-# Get recent projects from Claude logs directory
+# Get recent projects from log directories
 @app.get("/api/recent-projects")
 async def get_recent_projects():
-    """Get list of recent projects from Claude logs"""
+    """Get list of recent projects from log directories"""
     try:
-        claude_base = Path.home() / ".claude" / "projects"
-        if not claude_base.exists():
+        projects = get_all_projects_with_metadata()
+        if not projects:
             return JSONResponse({"projects": []})
 
-        # Get all project directories
-        projects = []
-        for project_dir in claude_base.iterdir():
-            if project_dir.is_dir():
-                # Check if it has log files
-                log_files = list(project_dir.glob("*.jsonl"))
-                if log_files:
-                    # Get most recent modification time
-                    latest_mod = max(f.stat().st_mtime for f in log_files)
-                    projects.append(
-                        {
-                            "dir_name": project_dir.name,  # The actual directory name
-                            "log_path": str(project_dir),
-                            "last_modified": latest_mod,
-                            "file_count": len(log_files),
-                        }
-                    )
+        projects.sort(key=lambda item: item.get("last_modified", 0), reverse=True)
 
-        # Sort by last modified, most recent first
-        projects.sort(key=lambda x: x["last_modified"], reverse=True)
+        recent = []
+        for project in projects[:20]:
+            recent.append(
+                {
+                    "dir_name": project["dir_name"],
+                    "display_name": project["display_name"],
+                    "log_path": project["log_path"],
+                    "provider": project["provider"],
+                    "last_modified": project.get("last_modified"),
+                    "file_count": project.get("file_count"),
+                }
+            )
 
-        # Return top 20 to show more options
-        return JSONResponse({"projects": projects[:20]})
+        return JSONResponse({"projects": recent})
 
     except Exception as e:
         return JSONResponse({"projects": [], "error": str(e)})
@@ -961,8 +996,6 @@ async def get_projects(
     Returns:
         JSON with projects list and metadata
     """
-    from sniffly.utils.log_finder import get_all_projects_with_metadata
-
     try:
         # Get all projects with metadata
         projects = get_all_projects_with_metadata()
@@ -1070,7 +1103,6 @@ async def get_global_stats():
         JSON with global statistics including charts data
     """
     from sniffly.core.global_aggregator import GlobalStatsAggregator
-    from sniffly.utils.log_finder import get_all_projects_with_metadata
 
     try:
         # Get all projects

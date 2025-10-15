@@ -1,12 +1,23 @@
 """
-Utility to find Claude logs for a given project path
+Utility helpers for locating Claude and Codex CLI log directories.
 """
 
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+CODEX_SLUG_PREFIX = "codex~"
+
+
+def _claude_base() -> Path:
+    return Path.home() / ".claude" / "projects"
+
+
+def _codex_base() -> Path:
+    return Path.home() / ".codex" / "sessions"
 
 
 def find_claude_logs(project_path: str) -> str | None:
@@ -33,16 +44,14 @@ def find_claude_logs(project_path: str) -> str | None:
         project_path = project_path[:-1]
 
     # Convert to Claude log format
-    # Replace all / with -
     converted_path = project_path.replace("/", "-")
 
     # Construct the Claude log path
-    claude_base = Path.home() / ".claude" / "projects"
+    claude_base = _claude_base()
     log_path = claude_base / converted_path
 
     # Check if it exists
     if log_path.exists() and log_path.is_dir():
-        # Verify it contains JSONL files
         jsonl_files = list(log_path.glob("*.jsonl"))
         if jsonl_files:
             return str(log_path)
@@ -66,14 +75,13 @@ def list_all_claude_projects() -> list:
         List of tuples (project_path, log_path)
     """
     projects = []
-    claude_base = Path.home() / ".claude" / "projects"
+    claude_base = _claude_base()
 
     if not claude_base.exists():
         return projects
 
     for log_dir in claude_base.iterdir():
         if log_dir.is_dir():
-            # Convert back from log format to project path
             dir_name = log_dir.name
 
             # Handle leading dash
@@ -82,7 +90,6 @@ def list_all_claude_projects() -> list:
             else:
                 project_path = dir_name.replace("-", "/")
 
-            # Verify it has JSONL files
             jsonl_files = list(log_dir.glob("*.jsonl"))
             if jsonl_files:
                 projects.append((project_path, str(log_dir)))
@@ -114,60 +121,158 @@ def validate_project_path(project_path: str) -> tuple[bool, str]:
     return True, f"Found logs at: {log_path}"
 
 
-def get_all_projects_with_metadata() -> list[dict]:
+def slugify_log_path(log_path: str) -> str:
     """
-    Get all Claude projects with metadata for fast display.
-
-    Returns metadata without reading file contents for performance.
-
-    Returns:
-        List of dictionaries containing:
-        - dir_name: Directory name in .claude/projects
-        - log_path: Full path to log directory
-        - file_count: Number of JSONL files
-        - total_size_mb: Total size of JSONL files in MB
-        - last_modified: Unix timestamp of most recent modification
-        - first_seen: Unix timestamp of earliest file (approximation of first use)
-        - display_name: Human-readable project name
+    Convert an absolute log path into a URL-safe slug that can be used
+    to reference the project from the UI or API.
     """
-    projects = []
-    claude_base = Path.home() / ".claude" / "projects"
-
-    if not claude_base.exists():
-        return projects
+    path = Path(log_path)
 
     try:
-        for log_dir in claude_base.iterdir():
-            if log_dir.is_dir():
-                jsonl_files = list(log_dir.glob("*.jsonl"))
-                if jsonl_files:
-                    # Get metadata without reading file contents
-                    total_size = sum(f.stat().st_size for f in jsonl_files)
+        relative = path.relative_to(_claude_base())
+        # Claude project directories are already flattened, but replace any slashes just in case.
+        return relative.as_posix().replace("/", "~")
+    except ValueError:
+        pass
 
-                    # Get modification times
-                    mtimes = [f.stat().st_mtime for f in jsonl_files]
-                    latest_mtime = max(mtimes)
-                    earliest_mtime = min(mtimes)
+    try:
+        relative = path.relative_to(_codex_base())
+        parts = [part for part in relative.parts if part]
+        if parts:
+            return CODEX_SLUG_PREFIX + "~".join(parts)
+    except ValueError:
+        pass
 
-                    # Use directory name as display name
-                    # Don't convert dashes to slashes as we can't distinguish
-                    # between dashes that were originally in the name vs path separators
-                    dir_name = log_dir.name
-                    display_name = dir_name
+    return path.name
 
-                    projects.append(
-                        {
-                            "dir_name": dir_name,
-                            "log_path": str(log_dir),
-                            "file_count": len(jsonl_files),
-                            "total_size_mb": round(total_size / (1024 * 1024), 2),
-                            "last_modified": latest_mtime,
-                            "first_seen": earliest_mtime,
-                            "display_name": display_name,
-                        }
-                    )
-    except Exception as e:
-        # Log error but continue - don't fail completely
-        logger.info(f"Error reading project metadata: {e}")
+
+def describe_log_path(log_path: str) -> dict[str, Any]:
+    """
+    Produce descriptive metadata for a log directory.
+
+    Returns:
+        {
+            'log_path': absolute path string,
+            'dir_name': slug used in URLs,
+            'display_name': human friendly label,
+            'provider': 'claude' | 'codex' | 'unknown'
+        }
+    """
+    path = Path(log_path)
+    slug = slugify_log_path(log_path)
+    provider = "unknown"
+    display_name = slug
+
+    try:
+        relative = path.relative_to(_claude_base())
+        provider = "claude"
+        if "~" in slug:
+            display_name = slug.replace("~", "/")
+    except ValueError:
+        try:
+            relative = path.relative_to(_codex_base())
+            provider = "codex"
+            display_name = f"Codex CLI / {'/'.join(relative.parts)}"
+        except ValueError:
+            pass
+
+    return {
+        "log_path": str(path),
+        "dir_name": slug,
+        "display_name": display_name,
+        "provider": provider,
+    }
+
+
+def resolve_log_slug(slug: str) -> dict[str, Any] | None:
+    """
+    Resolve a slug back to project metadata. Does not verify the directory exists.
+    """
+    if not slug:
+        return None
+
+    if slug.startswith(CODEX_SLUG_PREFIX):
+        remainder = slug[len(CODEX_SLUG_PREFIX) :]
+        parts = [part for part in remainder.split("~") if part]
+        if not parts:
+            return None
+        log_path = _codex_base().joinpath(*parts)
+        return describe_log_path(str(log_path))
+
+    # Default to Claude project slugs
+    log_path = _claude_base() / slug.replace("~", "/")
+    return describe_log_path(str(log_path))
+
+
+def _collect_project_metadata(log_dir: Path) -> dict[str, Any] | None:
+    """
+    Collect metadata for a log directory shared by Claude and Codex providers.
+    """
+    if not log_dir.exists() or not log_dir.is_dir():
+        return None
+
+    jsonl_files = list(log_dir.glob("*.jsonl"))
+    if not jsonl_files:
+        return None
+
+    description = describe_log_path(str(log_dir))
+    total_size = sum(f.stat().st_size for f in jsonl_files)
+    mtimes = [f.stat().st_mtime for f in jsonl_files]
+
+    metadata = {
+        **description,
+        "file_count": len(jsonl_files),
+        "total_size_mb": round(total_size / (1024 * 1024), 2),
+        "last_modified": max(mtimes),
+        "first_seen": min(mtimes),
+    }
+
+    if description["provider"] == "codex":
+        try:
+            relative = log_dir.relative_to(_codex_base())
+            metadata["relative_path"] = "/".join(relative.parts)
+        except ValueError:
+            metadata["relative_path"] = log_dir.name
+
+    return metadata
+
+
+def get_all_projects_with_metadata() -> list[dict[str, Any]]:
+    """
+    Get all known projects (Claude + Codex CLI) with lightweight metadata.
+
+    Returns metadata without reading file contents for performance.
+    """
+    projects: list[dict[str, Any]] = []
+
+    # Claude projects
+    claude_base = _claude_base()
+    if claude_base.exists():
+        try:
+            for log_dir in claude_base.iterdir():
+                metadata = _collect_project_metadata(log_dir)
+                if metadata:
+                    projects.append(metadata)
+        except Exception as exc:
+            logger.info(f"Error reading Claude project metadata: {exc}")
+
+    # Codex CLI sessions (organized by year/month/day)
+    codex_base = _codex_base()
+    if codex_base.exists():
+        try:
+            for year_dir in codex_base.iterdir():
+                if not year_dir.is_dir():
+                    continue
+                for month_dir in year_dir.iterdir():
+                    if not month_dir.is_dir():
+                        continue
+                    for day_dir in month_dir.iterdir():
+                        if not day_dir.is_dir():
+                            continue
+                        metadata = _collect_project_metadata(day_dir)
+                        if metadata:
+                            projects.append(metadata)
+        except Exception as exc:
+            logger.info(f"Error reading Codex session metadata: {exc}")
 
     return projects

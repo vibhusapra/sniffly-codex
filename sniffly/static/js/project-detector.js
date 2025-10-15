@@ -45,7 +45,8 @@
       // Update the UI to show the project name
       const projectInfo = document.getElementById('project-info-text');
       if (projectInfo) {
-        projectInfo.textContent = `Project: ${data.log_dir_name.replace(/-/g, '/')}`;
+        const label = data.display_name || (data.log_dir_name ? data.log_dir_name.replace(/-/g, '/') : '');
+        projectInfo.textContent = label ? `Project: ${label}` : 'Project selected';
       }
             
       return true;

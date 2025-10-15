@@ -7,7 +7,12 @@ from unittest.mock import patch
 
 import pytest
 
-from sniffly.utils.log_finder import find_claude_logs, get_all_projects_with_metadata
+from sniffly.utils.log_finder import (
+    find_claude_logs,
+    get_all_projects_with_metadata,
+    resolve_log_slug,
+    slugify_log_path,
+)
 
 
 class TestGetAllProjectsWithMetadata:
@@ -118,6 +123,52 @@ class TestGetAllProjectsWithMetadata:
                 # Should at least return the valid projects
                 assert len(result) >= 1
                 assert any(p['dir_name'] == '-Users-test-valid' for p in result)
+
+    def test_codex_sessions_are_discovered(self):
+        """Codex CLI sessions under ~/.codex/sessions should be returned."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_day = Path(temp_dir) / ".codex" / "sessions" / "2025" / "10" / "14"
+            codex_day.mkdir(parents=True)
+            rollout = codex_day / "rollout.jsonl"
+            rollout.write_text(
+                '\n'.join(
+                    [
+                        '{"timestamp": "2025-10-14T19:11:05Z", "type": "session_meta", "payload": {"id": "session-123", "cwd": "/tmp", "originator": "codex_cli_rs", "cli_version": "0.46.0"}}',
+                        '{"timestamp": "2025-10-14T19:11:05Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}}',
+                    ]
+                )
+                + '\n'
+            )
+
+            with patch('pathlib.Path.home') as mock_home:
+                mock_home.return_value = Path(temp_dir)
+                projects = get_all_projects_with_metadata()
+
+            codex_projects = [p for p in projects if p.get('provider') == 'codex']
+            assert len(codex_projects) == 1
+
+            project = codex_projects[0]
+            assert project['dir_name'] == 'codex~2025~10~14'
+            assert project['log_path'] == str(codex_day)
+            assert project.get('relative_path') == '2025/10/14'
+            assert project['display_name'] == 'Codex CLI / 2025/10/14'
+
+    def test_resolve_codex_slug(self):
+        """resolve_log_slug should convert codex slugs back to absolute paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_day = Path(temp_dir) / ".codex" / "sessions" / "2025" / "11" / "05"
+            codex_day.mkdir(parents=True)
+            (codex_day / "rollout.jsonl").write_text('{}\n')
+
+            with patch('pathlib.Path.home') as mock_home:
+                mock_home.return_value = Path(temp_dir)
+                slug = slugify_log_path(str(codex_day))
+                info = resolve_log_slug(slug)
+
+            assert slug == 'codex~2025~11~05'
+            assert info['log_path'] == str(codex_day)
+            assert info['provider'] == 'codex'
+            assert info['display_name'] == 'Codex CLI / 2025/11/05'
 
 
 class TestFindClaudeLogs:

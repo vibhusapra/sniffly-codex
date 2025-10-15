@@ -1,9 +1,9 @@
 import asyncio
 import logging
-from pathlib import Path
 
 from sniffly.config import Config
 from sniffly.core.processor import ClaudeLogProcessor
+from sniffly.utils.log_finder import get_all_projects_with_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -21,65 +21,53 @@ async def warm_recent_projects(
         limit = cache_warm_on_startup
 
     try:
-        # Get recent projects
-        log_dirs = []
-        claude_base = Path.home() / ".claude" / "projects"
+        projects = get_all_projects_with_metadata()
+        if not projects:
+            logger.debug("No projects found to warm")
+            return
 
-        if claude_base.exists():
-            # Get all directories with their most recent JSONL modification times
-            for d in claude_base.iterdir():
-                if d.is_dir():
-                    jsonl_files = list(d.glob("*.jsonl"))
-                    if jsonl_files:
-                        # Skip current project if requested
-                        if exclude_current and str(d) == current_log_path:
-                            continue
+        # Sort by most recent activity
+        projects.sort(key=lambda item: item.get("last_modified", 0), reverse=True)
 
-                        # Find the most recently modified JSONL file
-                        most_recent_mtime = max(f.stat().st_mtime for f in jsonl_files)
-                        log_dirs.append((d, most_recent_mtime))
+        warmed = 0
+        logger.debug(f"Starting to warm up to {limit} recent projects")
 
-            # Sort by most recent JSONL modification time (most recent first)
-            log_dirs.sort(key=lambda x: x[1], reverse=True)
+        for project in projects:
+            log_path = project["log_path"]
 
-            # Take only the most recent projects
-            recent_dirs = log_dirs[:limit]
+            if exclude_current and log_path == current_log_path:
+                continue
 
-            logger.debug(f"Starting to warm {len(recent_dirs)} recent projects")
+            if memory_cache.get(log_path):
+                logger.debug(f"{project['dir_name']} already in memory cache")
+                continue
 
-            for log_dir, _ in recent_dirs:
-                log_path = str(log_dir)
+            # Respect warm limit
+            if warmed >= limit:
+                break
 
-                # Skip if already in memory cache
-                if memory_cache.get(log_path):
-                    logger.info(f"{log_dir.name} already in memory cache")
-                    continue
+            await asyncio.sleep(0.1)
 
-                # Yield to other tasks
-                await asyncio.sleep(0.1)
+            try:
+                processor = ClaudeLogProcessor(log_path)
+                messages, stats = processor.process_logs()
 
-                try:
-                    # Process the project
-                    processor = ClaudeLogProcessor(log_path)
-                    messages, stats = processor.process_logs()
+                cache_service.save_cached_stats(log_path, stats)
+                cache_service.save_cached_messages(log_path, messages)
 
-                    # Save to file cache first (creates metadata)
-                    cache_service.save_cached_stats(log_path, stats)
-                    cache_service.save_cached_messages(log_path, messages)
+                if memory_cache.put(log_path, messages, stats, force=True):
+                    logger.debug(f"Successfully warmed {project['dir_name']}")
+                else:
+                    logger.debug(f"Failed to cache {project['dir_name']} (too large)")
 
-                    # Then store in memory cache (force=True for initial warming)
-                    if memory_cache.put(log_path, messages, stats, force=True):
-                        logger.debug(f"Successfully warmed {log_dir.name}")
-                    else:
-                        logger.debug(f"Failed to cache {log_dir.name} (too large)")
+                warmed += 1
 
-                except Exception as e:
-                    logger.info(f"Error processing {log_dir.name}: {e}")
+            except Exception as exc:
+                logger.info(f"Error processing {project['dir_name']}: {exc}")
 
-                # Longer delay between projects to avoid hogging resources
-                await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)
 
-        logger.debug(f"Completed warming {len(recent_dirs)} projects")
+        logger.debug(f"Completed warming {warmed} projects")
 
-    except Exception as e:
-        logger.info(f"Error in warm_recent_projects: {e}")
+    except Exception as exc:
+        logger.info(f"Error in warm_recent_projects: {exc}")

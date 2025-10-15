@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from ..utils.log_finder import slugify_log_path
 from ..utils.pricing import calculate_cost
 from .constants import ERROR_PATTERNS, USER_INTERRUPTION_API_ERROR, USER_INTERRUPTION_PATTERNS
 
@@ -119,7 +120,7 @@ class StatisticsGenerator:
         """
         # Extract project name from log directory path
         project_name = "Unknown Project"
-        log_dir_name = Path(self.log_directory).name  # Full directory name like -Users-chip-dev-...
+        log_dir_name = slugify_log_path(self.log_directory)
 
         if "/.claude/projects/" in self.log_directory:
             # Extract the project path part after /projects/
@@ -132,6 +133,9 @@ class StatisticsGenerator:
                 project_name = project_path.split("/")[-1]
             else:
                 project_name = project_part
+        elif "/.codex/sessions/" in self.log_directory:
+            relative = self.log_directory.split("/.codex/sessions/")[-1]
+            project_name = f"Codex CLI {relative}".strip()
 
         stats = {
             "overview": {

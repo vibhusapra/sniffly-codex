@@ -162,4 +162,5 @@ Settings are loaded in priority order:
 
 - **Configuration**: `~/.sniffly/config.json`
 - **Claude logs**: `~/.claude/projects/` (auto-detected)
+- **Codex CLI rollouts**: `~/.codex/sessions/<year>/<month>/<day>/` (auto-detected)
 - **Cache**: `~/.sniffly/cache/`
